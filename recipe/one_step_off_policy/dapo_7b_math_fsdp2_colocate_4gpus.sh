@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
+export WANDB_BASE_URL=http://47.251.42.82:8080
+export WANDB_API_KEY=fed2085defe840fda97b44d017cd7c5426903a4b
+export HF_DATASETS_CACHE="/user/ranchizhao/models/datasets"
+export HF_HOME="/user/ranchizhao/models/"
 set -xeuo pipefail
 
 project_name='DAPO'
-exp_name='DAPO-Qwen2.5-7b-Instruct-0527a1-fsdp2-one-step-off-4-12'
+exp_name='DAPO-Qwen2.5-7b-Instruct-0527a1-fsdp2-colocate-4gpus'
 
 adv_estimator=grpo
 
@@ -22,20 +26,16 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=128
+train_prompt_bsz=32
 n_resp_per_prompt=8
-train_prompt_mini_bsz=32
+train_prompt_mini_bsz=16
 
 # Ray
 # RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
 # WORKING_DIR=${WORKING_DIR:-"${PWD}"}
 # RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/verl/trainer/runtime_env.yaml"}
-NNODES=${NNODES:-2}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
-
-n_gpus_rollout=2
-n_gpus_training=$((NGPUS_PER_NODE - n_gpus_rollout))
-
+NNODES=${NNODES:-1}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-4}
 # Paths
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
 # very important! please modify the max_position_embeddings in config.json to 32768 after downloading from huggingface
@@ -43,8 +43,6 @@ MODEL_PATH=${MODEL_PATH:-"/user/ranchizhao/models/Qwen2.5-7B-Instruct"}
 CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
 TRAIN_FILE=${TRAIN_FILE:-"/user/ranchizhao/models/dapo-math-17k.parquet"}
 TEST_FILE=${TEST_FILE:-"/user/ranchizhao/models/aime-2024.parquet"}
-
-
 # Algorithm
 temperature=1.0
 top_p=1.0
@@ -55,13 +53,14 @@ val_top_p=0.7
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
-ref_offload=True
-actor_offload=False
+offload=True
 gen_tp=2
-sp_size=4
+sp_size=1
 fsdp_size=2
 
-python3 -m recipe.one_step_off_policy.main_ppo \
+# reference run wandb: https://wandb.ai/verl-org/DAPO%20Reproduction%20on%20verl/runs/ow47vvon?nw=nwusertongyuxuan361
+
+python3 -m verl.trainer.main_ppo \
     data.train_files="${TRAIN_FILE}" \
     data.val_files="${TEST_FILE}" \
     data.prompt_key=prompt \
@@ -81,7 +80,6 @@ python3 -m recipe.one_step_off_policy.main_ppo \
     actor_rollout_ref.actor.clip_ratio_high=${clip_ratio_high} \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.hybrid_engine=False \
     +actor_rollout_ref.model.override_config.max_position_embeddings=32768 \
     actor_rollout_ref.actor.use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
@@ -90,12 +88,13 @@ python3 -m recipe.one_step_off_policy.main_ppo \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
-    actor_rollout_ref.actor.fsdp_config.param_offload=${actor_offload} \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=${actor_offload} \
+    actor_rollout_ref.actor.fsdp_config.param_offload=${offload} \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=${offload} \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.grad_clip=1.0 \
     actor_rollout_ref.actor.loss_agg_mode=${loss_agg_mode} \
@@ -113,7 +112,7 @@ python3 -m recipe.one_step_off_policy.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.ref.fsdp_config.param_offload=${ref_offload} \
+    actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.fsdp_config.fsdp_size=${fsdp_size} \
     reward_model.reward_manager=dapo \
@@ -125,6 +124,8 @@ python3 -m recipe.one_step_off_policy.main_ppo \
     trainer.logger=['console','tensorboard'] \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
+    trainer.n_gpus_per_node="${NGPUS_PER_NODE}" \
+    trainer.nnodes="${NNODES}" \
     trainer.val_before_train=False \
     trainer.test_freq=-1 \
     trainer.save_freq=-1 \
@@ -132,8 +133,4 @@ python3 -m recipe.one_step_off_policy.main_ppo \
     trainer.total_training_steps=100 \
     trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
-    trainer.log_val_generations=10 \
-    trainer.nnodes="${NNODES}" \
-    trainer.n_gpus_per_node="${n_gpus_training}" \
-    rollout.nnodes="${NNODES}" \
-    rollout.n_gpus_per_node="${n_gpus_rollout}"
+    trainer.log_val_generations=10

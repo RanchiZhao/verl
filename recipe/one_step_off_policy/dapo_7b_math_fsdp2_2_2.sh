@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
+export WANDB_BASE_URL=http://47.251.42.82:8080
+export WANDB_API_KEY=fed2085defe840fda97b44d017cd7c5426903a4b
+export HF_DATASETS_CACHE="/user/ranchizhao/models/datasets"
+export HF_HOME="/user/ranchizhao/models/"
+
 set -xeuo pipefail
 
 project_name='DAPO'
-exp_name='DAPO-Qwen2.5-7b-Instruct-0527a1-fsdp2-one-step-off-4-12'
+exp_name='DAPO-Qwen2.5-7b-Instruct-0527a1-fsdp2-one-step-off-2-2'
 
 adv_estimator=grpo
 
@@ -22,16 +27,16 @@ overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
-train_prompt_bsz=128
+train_prompt_bsz=32
 n_resp_per_prompt=8
-train_prompt_mini_bsz=32
+train_prompt_mini_bsz=16
 
 # Ray
 # RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
 # WORKING_DIR=${WORKING_DIR:-"${PWD}"}
 # RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/verl/trainer/runtime_env.yaml"}
-NNODES=${NNODES:-2}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
+NNODES=${NNODES:-1}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-4}
 
 n_gpus_rollout=2
 n_gpus_training=$((NGPUS_PER_NODE - n_gpus_rollout))
@@ -58,7 +63,7 @@ infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
 ref_offload=True
 actor_offload=False
 gen_tp=2
-sp_size=4
+sp_size=1
 fsdp_size=2
 
 python3 -m recipe.one_step_off_policy.main_ppo \
@@ -122,7 +127,7 @@ python3 -m recipe.one_step_off_policy.main_ppo \
     +reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \
     +reward_model.reward_kwargs.overlong_buffer_cfg.log=False \
     +reward_model.reward_kwargs.max_resp_len=${max_response_length} \
-    trainer.logger=['console','tensorboard'] \
+    trainer.logger=['console','wandb'] \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
     trainer.val_before_train=False \
